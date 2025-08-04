@@ -9,8 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: app/Dockerfile      # preferred path (can be wrong/case-sensitive)
-  BUILD_CONTEXT: app              # preferred context (can be wrong/case-sensitive)
+  DOCKERFILE: app/Dockerfile
+  BUILD_CONTEXT: app
   ECR_REPO_NAME: akuphe-2048-game-repo
 
 concurrency:
@@ -216,6 +216,17 @@ jobs:
         with:
           terraform_version: 1.9.5
 
+      - name: Write backend.hcl (this job)
+        working-directory: terraform
+        run: |
+          cat > backend.hcl <<EOF
+          bucket         = "${{ needs.bootstrap_state.outputs.tf_bucket }}"
+          key            = "${{ env.TF_STATE_KEY }}"
+          region         = "${{ env.AWS_REGION }}"
+          dynamodb_table = "${{ needs.bootstrap_state.outputs.tf_table }}"
+          encrypt        = true
+          EOF
+
       - name: Terraform Init
         working-directory: terraform
         run: terraform init -backend-config=backend.hcl
@@ -249,6 +260,17 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.5
+
+      - name: Write backend.hcl (this job)
+        working-directory: terraform
+        run: |
+          cat > backend.hcl <<EOF
+          bucket         = "${{ needs.bootstrap_state.outputs.tf_bucket }}"
+          key            = "${{ env.TF_STATE_KEY }}"
+          region         = "${{ env.AWS_REGION }}"
+          dynamodb_table = "${{ needs.bootstrap_state.outputs.tf_table }}"
+          encrypt        = true
+          EOF
 
       - name: Terraform Init
         working-directory: terraform
