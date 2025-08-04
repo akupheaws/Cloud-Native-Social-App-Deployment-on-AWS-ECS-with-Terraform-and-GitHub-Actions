@@ -107,7 +107,6 @@ jobs:
           BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
           test -n "$BUCKET" || { echo "Bucket empty"; exit 1; }
           echo "bucket_name=$BUCKET" >> "$GITHUB_OUTPUT"
-          echo "Bucket: $BUCKET (len=$(echo -n $BUCKET | wc -c))"
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -283,6 +282,8 @@ jobs:
     needs: plan
     permissions:
       contents: read
+    outputs:
+      alb: ${{ steps.resolve.outputs.alb }}
     steps:
       - uses: actions/checkout@v4
 
@@ -329,18 +330,26 @@ jobs:
         run: terraform init -reconfigure -backend-config=backend.hcl
 
       - name: Terraform Apply (with image tag)
-        id: tfapply
         working-directory: terraform
         run: |
           terraform apply -auto-approve             -var="region=${{ env.AWS_REGION }}"             -var="image_tag=${{ github.sha }}"             -var="ecr_repo_name=${{ env.ECR_REPO_NAME }}"
 
-      - name: Output ALB
-        id: out
+      - name: Resolve ALB DNS (tf output -> AWS CLI fallback)
+        id: resolve
         working-directory: terraform
-        run: echo "alb=$(terraform output -raw alb_dns_name)" >> "$GITHUB_OUTPUT"
-
-    outputs:
-      alb: ${{ steps.out.outputs.alb }}
+        run: |
+          set -e
+          ALB="$(terraform output -raw alb_dns_name || true)"
+          if [ -z "$ALB" ]; then
+            NAME="${PROJECT_NAME}-alb"
+            ALB=$(aws elbv2 describe-load-balancers --names "$NAME"               --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
+          fi
+          if [ -z "$ALB" ] || [ "$ALB" = "None" ]; then
+            echo "Failed to resolve ALB DNS name" >&2
+            exit 1
+          fi
+          echo "alb=$ALB" >> "$GITHUB_OUTPUT"
+          echo "Resolved ALB: $ALB"
 
   smoke_test:
     name: Smoke test
