@@ -36,7 +36,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Compute valid bucket name (<=63 chars, lowercase, alnum ends)
+      - name: Compute valid bucket name
         id: bk
         run: |
           REPO_SLUG="${{ github.repository }}"
@@ -47,6 +47,7 @@ jobs:
           SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
           BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
           BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
+          test -n "$BUCKET" || { echo "Bucket empty"; exit 1; }
           echo "bucket_name=$BUCKET" >> "$GITHUB_OUTPUT"
           echo "Bucket: $BUCKET (len=$(echo -n $BUCKET | wc -c))"
 
@@ -93,6 +94,21 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Compute valid bucket name (this job)
+        id: bk
+        run: |
+          REPO_SLUG="${{ github.repository }}"
+          SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
+          BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          BASE=${BASE:0:32}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
+          BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
+          BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
+          test -n "$BUCKET" || { echo "Bucket empty"; exit 1; }
+          echo "bucket_name=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "Bucket: $BUCKET (len=$(echo -n $BUCKET | wc -c))"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
@@ -102,7 +118,7 @@ jobs:
         working-directory: terraform
         run: |
           cat > backend.hcl <<EOF
-          bucket         = "${{ needs.bootstrap_state.outputs.tf_bucket }}"
+          bucket         = "${{ steps.bk.outputs.bucket_name }}"
           key            = "${{ env.TF_STATE_KEY }}"
           region         = "${{ env.AWS_REGION }}"
           dynamodb_table = "${{ env.LOCK_TABLE_NAME }}"
@@ -215,16 +231,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Compute valid bucket name (this job)
+        id: bk
+        run: |
+          REPO_SLUG="${{ github.repository }}"
+          SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
+          BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          BASE=${BASE:0:32}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
+          BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
+          BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
+          test -n "$BUCKET" || { echo "Bucket empty"; exit 1; }
+          echo "bucket_name=$BUCKET" >> "$GITHUB_OUTPUT"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.5
 
-      - name: Write backend.hcl (this job)
+      - name: Write backend.hcl
         working-directory: terraform
         run: |
           cat > backend.hcl <<EOF
-          bucket         = "${{ needs.bootstrap_state.outputs.tf_bucket }}"
+          bucket         = "${{ steps.bk.outputs.bucket_name }}"
           key            = "${{ env.TF_STATE_KEY }}"
           region         = "${{ env.AWS_REGION }}"
           dynamodb_table = "${{ env.LOCK_TABLE_NAME }}"
@@ -263,16 +293,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Compute valid bucket name (this job)
+        id: bk
+        run: |
+          REPO_SLUG="${{ github.repository }}"
+          SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
+          BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          BASE=${BASE:0:32}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
+          BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
+          BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
+          test -n "$BUCKET" || { echo "Bucket empty"; exit 1; }
+          echo "bucket_name=$BUCKET" >> "$GITHUB_OUTPUT"
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.9.5
 
-      - name: Write backend.hcl (this job)
+      - name: Write backend.hcl
         working-directory: terraform
         run: |
           cat > backend.hcl <<EOF
-          bucket         = "${{ needs.bootstrap_state.outputs.tf_bucket }}"
+          bucket         = "${{ steps.bk.outputs.bucket_name }}"
           key            = "${{ env.TF_STATE_KEY }}"
           region         = "${{ env.AWS_REGION }}"
           dynamodb_table = "${{ env.LOCK_TABLE_NAME }}"
