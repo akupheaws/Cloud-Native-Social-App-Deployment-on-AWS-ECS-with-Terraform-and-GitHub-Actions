@@ -9,8 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: app/Dockerfile
-  DOCKER_CONTEXT: app
+  DOCKERFILE: app/Dockerfile          # path to your Dockerfile
+  BUILD_CONTEXT: app                  # <-- renamed from DOCKER_CONTEXT to avoid Docker CLI conflict
   ECR_REPO_NAME: akuphe-2048-game-repo
 
 concurrency:
@@ -40,12 +40,12 @@ jobs:
           SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
           # Keep only a-z 0-9 -, collapse dashes, trim edges
           BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
-          # Cap the base to 32 chars to ensure final length <= 63
+          # Cap the base to 32 chars so final length <= 63
           BASE=${BASE:0:32}
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
           BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
-          # Ensure bucket starts/ends with alnum (trim dashes again if needed)
+          # Ensure bucket starts/ends with alnum
           BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
           echo "bucket_name=$BUCKET" >> $GITHUB_OUTPUT
           echo "Bucket: $BUCKET (len=$(echo -n $BUCKET | wc -c))"
@@ -125,10 +125,14 @@ jobs:
       - name: Get ECR URL
         id: out
         working-directory: terraform
-        run: echo "ecr_url=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
+        run: |
+          echo "ecr_url=$(terraform output -raw ecr_repository_url)" >> $GITHUB_OUTPUT
+          # Extract registry domain (without repo suffix) for docker login
+          echo "registry=$(terraform output -raw ecr_repository_url | cut -d'/' -f1)" >> $GITHUB_OUTPUT
 
     outputs:
-      ecr_url: ${{ steps.out.outputs.ecr_url }}
+      ecr_url:   ${{ steps.out.outputs.ecr_url }}
+      registry:  ${{ steps.out.outputs.registry }}
 
   build_and_push:
     name: Build & push Docker image (latest + SHA)
@@ -144,12 +148,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
+      - name: Ensure Docker uses default context (avoid DOCKER_CONTEXT conflicts)
         run: |
-          aws ecr get-login-password --region $AWS_REGION             | docker login --username AWS --password-stdin ${{ needs.seed_ecr.outputs.ecr_url }}
+          docker context use default || true
+          unset DOCKER_CONTEXT || true
+
+      - name: Login to ECR (registry domain only)
+        run: |
+          REG="${{ needs.seed_ecr.outputs.registry }}"
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "$REG"
 
       - name: Build
-        run: docker build -f "$DOCKERFILE" -t app:${{ github.sha }} "$DOCKER_CONTEXT"
+        run: docker build -f "$DOCKERFILE" -t app:${{ github.sha }} "$BUILD_CONTEXT"
 
       - name: Tag & push (latest + SHA)
         run: |
