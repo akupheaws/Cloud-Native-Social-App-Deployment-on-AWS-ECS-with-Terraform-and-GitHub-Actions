@@ -1,4 +1,4 @@
-name: Deploy 2048 to ECS Fargate (Committed Terraform)
+name: Deploy 2048 to ECS Fargate (Committed Terraform — Stable + Robust ALB Resolve)
 
 on:
   push:
@@ -196,7 +196,6 @@ jobs:
               exit 1
             fi
             CTX=$(dirname "$DF")
-            [ -z "$CTX" ] && CTX="."
           fi
           echo "dockerfile=$DF" >> "$GITHUB_OUTPUT"
           echo "context=$CTX" >> "$GITHUB_OUTPUT"
@@ -334,6 +333,10 @@ jobs:
         run: |
           terraform apply -auto-approve             -var="region=${{ env.AWS_REGION }}"             -var="image_tag=${{ github.sha }}"             -var="ecr_repo_name=${{ env.ECR_REPO_NAME }}"
 
+      - name: Wait for ECS service stable
+        run: |
+          aws ecs wait services-stable             --cluster "${PROJECT_NAME}-cluster"             --services "${PROJECT_NAME}-svc"
+
       - name: Resolve ALB DNS (tf output -> AWS CLI fallback)
         id: resolve
         working-directory: terraform
@@ -346,6 +349,8 @@ jobs:
           fi
           if [ -z "$ALB" ] || [ "$ALB" = "None" ]; then
             echo "Failed to resolve ALB DNS name" >&2
+            echo "Listing existing ALBs for diagnostics:"
+            aws elbv2 describe-load-balancers --query 'LoadBalancers[].{Name:LoadBalancerName,DNS:DNSName}' --output table || true
             exit 1
           fi
           echo "alb=$ALB" >> "$GITHUB_OUTPUT"
@@ -358,12 +363,37 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Wait a bit for stabilization
-        run: sleep 30
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Determine ALB URL (prefer job output, else discover)
+        id: pick
+        run: |
+          URL="http://${{ needs.apply.outputs.alb }}"
+          if [ "$URL" = "http://" ] || [ -z "${{ needs.apply.outputs.alb }}" ]; then
+            NAME="${PROJECT_NAME}-alb"
+            DNS=$(aws elbv2 describe-load-balancers --names "$NAME" --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
+            if [ -n "$DNS" ] && [ "$DNS" != "None" ]; then
+              URL="http://$DNS"
+            fi
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Resolved URL: $URL"
+
+      - name: Fail fast if URL is empty
+        run: |
+          if [ "${{ steps.pick.outputs.url }}" = "http://" ] || [ -z "${{ steps.pick.outputs.url }}" ]; then
+            echo "ALB URL is empty. Please check the apply job logs for 'Resolved ALB:' lines." >&2
+            exit 1
+          fi
 
       - name: Curl homepage until 200
         run: |
-          URL="http://${{ needs.apply.outputs.alb }}"
+          URL="${{ steps.pick.outputs.url }}"
           echo "Hitting $URL"
           for i in {1..30}; do
             code=$(curl -s -o /dev/null -w "%{http_code}" "$URL" || true)
