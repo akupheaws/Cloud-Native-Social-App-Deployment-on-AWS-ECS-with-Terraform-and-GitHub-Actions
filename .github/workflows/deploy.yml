@@ -9,8 +9,11 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
+  # Adjust if your Dockerfile/context differ
   DOCKERFILE: app/Dockerfile
   DOCKER_CONTEXT: app
+  # Your desired ECR repository name
+  ECR_REPO_NAME: akuphe-2048-game-repo
 
 concurrency:
   group: deploy-2048
@@ -32,20 +35,30 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Compute deterministic bucket name from repo + account
+      - name: Compute deterministic bucket name (lowercase, <=63 chars)
         id: ids
         run: |
+          REPO_SLUG="${{ github.repository }}"              # owner/repo
+          SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
+          # keep only a-z 0-9 -, collapse dashes, trim edges, then cap to 40 chars
+          BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          BASE=${BASE:0:40}
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          REPO_SLUG="${{ github.repository }}" # owner/repo
-          BUCKET_NAME="${REPO_SLUG//\//-}-${{ env.BOOTSTRAP_BUCKET_PREFIX }}-${ACCOUNT_ID}"
+          SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
+          BUCKET="${BASE}-tf-${ACCOUNT_ID}-${SUFFIX}"
           echo "account_id=$ACCOUNT_ID"   >> $GITHUB_OUTPUT
-          echo "bucket_name=$BUCKET_NAME" >> $GITHUB_OUTPUT
+          echo "bucket_name=$BUCKET"      >> $GITHUB_OUTPUT
 
       - name: Create S3 bucket (if missing)
+        env:
+          BUCKET: ${{ steps.ids.outputs.bucket_name }}
         run: |
-          BUCKET="${{ steps.ids.outputs.bucket_name }}"
           if ! aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
-            aws s3api create-bucket --bucket "$BUCKET" --region $AWS_REGION               --create-bucket-configuration LocationConstraint=$AWS_REGION
+            if [ "$AWS_REGION" = "us-east-1" ]; then
+              aws s3api create-bucket --bucket "$BUCKET"
+            else
+              aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"                 --create-bucket-configuration LocationConstraint="$AWS_REGION"
+            fi
             aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
             aws s3api put-bucket-encryption --bucket "$BUCKET" --server-side-encryption-configuration '{
               "Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
@@ -105,7 +118,8 @@ jobs:
 
       - name: Create only ECR (so we can push image)
         working-directory: terraform
-        run: terraform apply -auto-approve -target=aws_ecr_repository.app
+        run: |
+          terraform apply -auto-approve             -target=aws_ecr_repository.app             -var="region=${{ env.AWS_REGION }}"             -var="ecr_repo_name=${{ env.ECR_REPO_NAME }}"
 
       - name: Get ECR URL
         id: out
@@ -116,7 +130,7 @@ jobs:
       ecr_url: ${{ steps.out.outputs.ecr_url }}
 
   build_and_push:
-    name: Build & push Docker image
+    name: Build & push Docker image (latest + SHA)
     runs-on: ubuntu-latest
     needs: seed_ecr
     steps:
@@ -136,10 +150,12 @@ jobs:
       - name: Build
         run: docker build -f "$DOCKERFILE" -t app:${{ github.sha }} "$DOCKER_CONTEXT"
 
-      - name: Tag & push
+      - name: Tag & push (latest + SHA)
         run: |
           docker tag app:${{ github.sha }} ${{ needs.seed_ecr.outputs.ecr_url }}:${{ github.sha }}
+          docker tag app:${{ github.sha }} ${{ needs.seed_ecr.outputs.ecr_url }}:latest
           docker push ${{ needs.seed_ecr.outputs.ecr_url }}:${{ github.sha }}
+          docker push ${{ needs.seed_ecr.outputs.ecr_url }}:latest
 
   plan:
     name: Terraform Plan
@@ -172,7 +188,8 @@ jobs:
 
       - name: Terraform Plan (with image tag)
         working-directory: terraform
-        run: terraform plan -var="region=${{ env.AWS_REGION }}" -var="image_tag=${{ github.sha }}"
+        run: |
+          terraform plan             -var="region=${{ env.AWS_REGION }}"             -var="image_tag=${{ github.sha }}"             -var="ecr_repo_name=${{ env.ECR_REPO_NAME }}"
 
   apply:
     name: Terraform Apply (deploy)
@@ -200,7 +217,8 @@ jobs:
       - name: Terraform Apply (with image tag)
         id: tfapply
         working-directory: terraform
-        run: terraform apply -auto-approve -var="region=${{ env.AWS_REGION }}" -var="image_tag=${{ github.sha }}"
+        run: |
+          terraform apply -auto-approve             -var="region=${{ env.AWS_REGION }}"             -var="image_tag=${{ github.sha }}"             -var="ecr_repo_name=${{ env.ECR_REPO_NAME }}"
 
       - name: Output ALB
         id: out
