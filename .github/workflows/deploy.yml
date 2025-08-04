@@ -9,10 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
-  # Adjust if your Dockerfile/context differ
   DOCKERFILE: app/Dockerfile
   DOCKER_CONTEXT: app
-  # Your desired ECR repository name
   ECR_REPO_NAME: akuphe-2048-game-repo
 
 concurrency:
@@ -35,19 +33,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ env.AWS_REGION }}
 
-      - name: Compute deterministic bucket name (lowercase, <=63 chars)
+      - name: Compute deterministic bucket name (<=63 chars, lowercase, ends with alnum)
         id: ids
         run: |
           REPO_SLUG="${{ github.repository }}"              # owner/repo
           SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
-          # keep only a-z 0-9 -, collapse dashes, trim edges, then cap to 40 chars
+          # Keep only a-z 0-9 -, collapse dashes, trim edges
           BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
-          BASE=${BASE:0:40}
+          # Cap the base to 32 chars to ensure final length <= 63
+          BASE=${BASE:0:32}
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
-          BUCKET="${BASE}-tf-${ACCOUNT_ID}-${SUFFIX}"
-          echo "account_id=$ACCOUNT_ID"   >> $GITHUB_OUTPUT
-          echo "bucket_name=$BUCKET"      >> $GITHUB_OUTPUT
+          BUCKET="${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf"
+          # Ensure bucket starts/ends with alnum (trim dashes again if needed)
+          BUCKET=$(echo "$BUCKET" | sed -E 's/^-+//; s/-+$//')
+          echo "bucket_name=$BUCKET" >> $GITHUB_OUTPUT
+          echo "Bucket: $BUCKET (len=$(echo -n $BUCKET | wc -c))"
 
       - name: Create S3 bucket (if missing)
         env:
