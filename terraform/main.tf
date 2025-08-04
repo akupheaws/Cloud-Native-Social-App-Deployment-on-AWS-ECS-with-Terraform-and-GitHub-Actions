@@ -1,57 +1,83 @@
-locals { tags = { Project = var.project_name, Env = "default" } }
-
-# Networking: default VPC + all subnets
-data "aws_vpc" "default" { default = true }
-data "aws_subnets" "default_all" {
-  filter { name = "vpc-id" values = [data.aws_vpc.default.id] }
+locals {
+  tags = {
+    Project = var.project_name
+    Env     = "default"
+  }
 }
 
-# ECR
+# ---------- Networking: default VPC + all subnets ----------
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default_all" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# ---------- ECR ----------
 resource "aws_ecr_repository" "app" {
   name                 = var.ecr_repo_name
   image_tag_mutability = "MUTABLE"
-  image_scanning_configuration { scan_on_push = true }
+  image_scanning_configuration {
+    scan_on_push = true
+  }
   tags = local.tags
 }
 
-# CloudWatch Logs
+# ---------- CloudWatch Logs ----------
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/ecs/${var.project_name}"
   retention_in_days = 14
   tags              = local.tags
 }
 
-# ECS Cluster
+# ---------- ECS Cluster ----------
 resource "aws_ecs_cluster" "this" {
   name = "${var.project_name}-cluster"
-  setting { name = "containerInsights"; value = "enabled" }
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
   tags = local.tags
 }
 
-# IAM roles
+# ---------- IAM (task exec + task role) ----------
 data "aws_iam_policy_document" "assume_task" {
   statement {
     effect = "Allow"
-    principals { type = "Service", identifiers = ["ecs-tasks.amazonaws.com"] }
+
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+
     actions = ["sts:AssumeRole"]
   }
 }
+
 resource "aws_iam_role" "task_execution" {
   name               = "${var.project_name}-task-exec"
   assume_role_policy = data.aws_iam_policy_document.assume_task.json
   tags               = local.tags
 }
+
 resource "aws_iam_role_policy_attachment" "task_exec_attach" {
   role       = aws_iam_role.task_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
+
 resource "aws_iam_role" "task" {
   name               = "${var.project_name}-task-role"
   assume_role_policy = data.aws_iam_policy_document.assume_task.json
   tags               = local.tags
 }
 
-# Task Definition
+# ---------- Task Definition ----------
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
   cpu                      = var.cpu
@@ -60,6 +86,7 @@ resource "aws_ecs_task_definition" "app" {
   requires_compatibilities = ["FARGATE"]
   execution_role_arn       = aws_iam_role.task_execution.arn
   task_role_arn            = aws_iam_role.task.arn
+
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
@@ -70,41 +97,72 @@ resource "aws_ecs_task_definition" "app" {
       name      = "app"
       image     = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
       essential = true
-      portMappings = [{ containerPort = var.container_port, protocol = "tcp" }]
+
+      portMappings = [{
+        containerPort = var.container_port
+        protocol      = "tcp"
+      }]
+
       logConfiguration = {
-        logDriver = "awslogs",
+        logDriver = "awslogs"
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.app.name,
-          awslogs-region        = var.region,
+          awslogs-group         = aws_cloudwatch_log_group.app.name
+          awslogs-region        = var.region
           awslogs-stream-prefix = "app"
         }
       }
     }
   ])
+
   tags = local.tags
 }
 
-# Security Groups
+# ---------- Security Groups ----------
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "Allow HTTP"
   vpc_id      = data.aws_vpc.default.id
 
-  ingress { from_port = 80 to_port = 80 protocol = "tcp" cidr_blocks = ["0.0.0.0/0"] }
-  egress  { from_port = 0  to_port = 0  protocol = "-1"  cidr_blocks = ["0.0.0.0/0"] }
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = local.tags
 }
+
 resource "aws_security_group" "tasks" {
   name        = "${var.project_name}-tasks-sg"
   description = "Allow from ALB"
   vpc_id      = data.aws_vpc.default.id
 
-  ingress { from_port = var.container_port to_port = var.container_port protocol = "tcp" security_groups = [aws_security_group.alb.id] }
-  egress  { from_port = 0  to_port = 0  protocol = "-1"  cidr_blocks = ["0.0.0.0/0"] }
+  ingress {
+    from_port       = var.container_port
+    to_port         = var.container_port
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = local.tags
 }
 
-# ALB + Target Group + Listener
+# ---------- ALB + TG + Listener ----------
 resource "aws_lb" "app" {
   name               = "${var.project_name}-alb"
   internal           = false
@@ -113,12 +171,14 @@ resource "aws_lb" "app" {
   subnets            = data.aws_subnets.default_all.ids
   tags               = local.tags
 }
+
 resource "aws_lb_target_group" "app" {
   name        = "${var.project_name}-tg"
   port        = var.container_port
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = data.aws_vpc.default.id
+
   health_check {
     path                = "/"
     matcher             = "200"
@@ -127,19 +187,22 @@ resource "aws_lb_target_group" "app" {
     interval            = 30
     timeout             = 5
   }
+
   tags = local.tags
 }
+
 resource "aws_lb_listener" "http" {
   load_balancer_arn = aws_lb.app.arn
   port              = 80
   protocol          = "HTTP"
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.app.arn
   }
 }
 
-# ECS Service
+# ---------- ECS Service ----------
 resource "aws_ecs_service" "app" {
   name            = "${var.project_name}-svc"
   cluster         = aws_ecs_cluster.this.id
@@ -149,8 +212,8 @@ resource "aws_ecs_service" "app" {
 
   network_configuration {
     assign_public_ip = true
-    subnets         = data.aws_subnets.default_all.ids
-    security_groups = [aws_security_group.tasks.id]
+    subnets          = data.aws_subnets.default_all.ids
+    security_groups  = [aws_security_group.tasks.id]
   }
 
   load_balancer {
@@ -159,7 +222,10 @@ resource "aws_ecs_service" "app" {
     container_port   = var.container_port
   }
 
-  lifecycle { ignore_changes = [task_definition] }
+  lifecycle {
+    ignore_changes = [task_definition]
+  }
+
   depends_on = [aws_lb_listener.http]
   tags       = local.tags
 }
