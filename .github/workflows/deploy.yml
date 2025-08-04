@@ -1,4 +1,4 @@
-name: Deploy 2048 to ECS Fargate (Committed Terraform)
+name: Deploy 2048 to ECS Fargate (Committed Terraform + Auto Dockerfile Detect)
 
 on:
   push:
@@ -9,8 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: app/Dockerfile
-  BUILD_CONTEXT: app
+  DOCKERFILE: app/Dockerfile      # preferred path (can be wrong/case-sensitive)
+  BUILD_CONTEXT: app              # preferred context (can be wrong/case-sensitive)
   ECR_REPO_NAME: akuphe-2048-game-repo
 
 concurrency:
@@ -153,20 +153,41 @@ jobs:
         run: |
           ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           REGISTRY="${ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-          # Prefer terraform output, else compose from registry + env repo name
           REPO_URL="${{ needs.seed_ecr.outputs.ecr_url }}"
           if [ -z "$REPO_URL" ]; then
             REPO_URL="${REGISTRY}/${ECR_REPO_NAME}"
           fi
           echo "registry=$REGISTRY" >> $GITHUB_OUTPUT
           echo "repo_url=$REPO_URL" >> $GITHUB_OUTPUT
+          echo "Resolved registry: $REGISTRY"
+          echo "Resolved repo_url: $REPO_URL"
 
       - name: Login to ECR
         run: |
           aws ecr get-login-password --region "$AWS_REGION"             | docker login --username AWS --password-stdin "${{ steps.ecr.outputs.registry }}"
 
+      - name: Locate Dockerfile & context (auto-fallback if configured paths missing)
+        id: locate
+        run: |
+          if [ -f "$DOCKERFILE" ] && [ -d "$BUILD_CONTEXT" ]; then
+            DF="$DOCKERFILE"; CTX="$BUILD_CONTEXT"
+          else
+            echo "Configured paths not found. Auto-detecting..."
+            DF=$(git ls-files | grep -E '(^|/)Dockerfile$' | head -n1 || true)
+            if [ -z "$DF" ]; then
+              echo "No Dockerfile found in repository." >&2
+              exit 1
+            fi
+            CTX=$(dirname "$DF")
+            [ -z "$CTX" ] && CTX="."
+          fi
+          echo "dockerfile=$DF" >> $GITHUB_OUTPUT
+          echo "context=$CTX" >> $GITHUB_OUTPUT
+          echo "Using Dockerfile: $DF"
+          echo "Using build context: $CTX"
+
       - name: Build
-        run: docker build -f "$DOCKERFILE" -t app:${{ github.sha }} "$BUILD_CONTEXT"
+        run: docker build -f "${{ steps.locate.outputs.dockerfile }}" -t app:${{ github.sha }} "${{ steps.locate.outputs.context }}"
 
       - name: Tag & push (latest + SHA)
         run: |
