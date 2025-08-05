@@ -1,6 +1,6 @@
-# Used by GitHub Actions; values are injected at runtime.
+# Example only. Your workflow writes this dynamically in each job.
 bucket         = "<YOUR_TF_STATE_BUCKET>"
 key            = "terraform.tfstate"
 region         = "<YOUR_AWS_REGION>"
-dynamodb_table = "<YOUR_TF_LOCK_TABLE>"
+dynamodb_table = "tf-locks"
 encrypt        = true

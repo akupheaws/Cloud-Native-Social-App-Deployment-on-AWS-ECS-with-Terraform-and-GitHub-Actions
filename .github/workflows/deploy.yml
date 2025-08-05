@@ -1,4 +1,4 @@
-name: Deploy 2048 to ECS Fargate (Committed Terraform — Stable + Robust ALB Resolve)
+name: Deploy (Root Dockerfile & Context)
 
 on:
   push:
@@ -9,8 +9,8 @@ env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: game-2048
   TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: app/Dockerfile
-  BUILD_CONTEXT: app
+  DOCKERFILE: Dockerfile        # <-- moved to root
+  BUILD_CONTEXT: .              # <-- moved to root
   ECR_REPO_NAME: akuphe-2048-game-repo
   LOCK_TABLE_NAME: tf-locks
 
@@ -183,10 +183,10 @@ jobs:
         run: |
           aws ecr get-login-password --region "$AWS_REGION"             | docker login --username AWS --password-stdin "${{ steps.ecr.outputs.registry }}"
 
-      - name: Locate Dockerfile & context (auto-fallback if configured paths missing)
+      - name: Locate Dockerfile & context (still has auto-fallback)
         id: locate
         run: |
-          if [ -f "$DOCKERFILE" ] && [ -d "$BUILD_CONTEXT" ]; then
+          if [ -f "$DOCKERFILE" ] && [ -d "$BUILD_CONTEXT" -o "$BUILD_CONTEXT" = "." ]; then
             DF="$DOCKERFILE"; CTX="$BUILD_CONTEXT"
           else
             echo "Configured paths not found. Auto-detecting..."
@@ -196,6 +196,7 @@ jobs:
               exit 1
             fi
             CTX=$(dirname "$DF")
+            [ -z "$CTX" ] && CTX="."
           fi
           echo "dockerfile=$DF" >> "$GITHUB_OUTPUT"
           echo "context=$CTX" >> "$GITHUB_OUTPUT"
@@ -349,7 +350,6 @@ jobs:
           fi
           if [ -z "$ALB" ] || [ "$ALB" = "None" ]; then
             echo "Failed to resolve ALB DNS name" >&2
-            echo "Listing existing ALBs for diagnostics:"
             aws elbv2 describe-load-balancers --query 'LoadBalancers[].{Name:LoadBalancerName,DNS:DNSName}' --output table || true
             exit 1
           fi
@@ -363,24 +363,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Configure AWS
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Determine ALB URL (prefer job output, else discover)
+      - name: Determine ALB URL
         id: pick
         run: |
           URL="http://${{ needs.apply.outputs.alb }}"
-          if [ "$URL" = "http://" ] || [ -z "${{ needs.apply.outputs.alb }}" ]; then
-            NAME="${PROJECT_NAME}-alb"
-            DNS=$(aws elbv2 describe-load-balancers --names "$NAME" --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
-            if [ -n "$DNS" ] && [ "$DNS" != "None" ]; then
-              URL="http://$DNS"
-            fi
-          fi
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "Resolved URL: $URL"
 

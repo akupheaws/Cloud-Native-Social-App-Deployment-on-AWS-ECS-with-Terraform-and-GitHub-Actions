@@ -1,11 +1,18 @@
-# Use the official Nginx image as the base
-FROM nginx:latest
+# syntax=docker/dockerfile:1
+FROM node:20-alpine
 
-# Copy the 2048 game files to the Nginx web root
-COPY . /usr/share/nginx/html
+ENV NODE_ENV=production     PORT=8000     APP_NAME=socialapp
 
-# Expose the default Nginx HTTP port
-EXPOSE 80
+WORKDIR /app
 
-# Start Nginx when the container starts
-CMD ["nginx", "-g", "daemon off;"]
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
+
+COPY . .
+
+# Add a non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+EXPOSE 8000
+CMD ["node", "server.js"]

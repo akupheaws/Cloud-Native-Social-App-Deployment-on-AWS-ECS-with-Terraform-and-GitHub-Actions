@@ -1,3 +1,7 @@
+#####################################
+# Locals
+#####################################
+
 locals {
   tags = {
     Project = var.project_name
@@ -5,7 +9,10 @@ locals {
   }
 }
 
-# ---------- Networking: default VPC + all subnets ----------
+#####################################
+# Data sources (default VPC / subnets)
+#####################################
+
 data "aws_vpc" "default" {
   default = true
 }
@@ -17,24 +24,84 @@ data "aws_subnets" "default_all" {
   }
 }
 
-# ---------- ECR ----------
-resource "aws_ecr_repository" "app" {
-  name                 = var.ecr_repo_name
-  image_tag_mutability = "MUTABLE"
-  image_scanning_configuration {
-    scan_on_push = true
+#####################################
+# DynamoDB tables
+#####################################
+
+resource "aws_dynamodb_table" "users" {
+  name         = "${var.project_name}-users"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "username"
+
+  attribute {
+    name = "username"
+    type = "S"
   }
+
   tags = local.tags
 }
 
-# ---------- CloudWatch Logs ----------
+resource "aws_dynamodb_table" "posts" {
+  name         = "${var.project_name}-posts"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "post_id"
+
+  attribute {
+    name = "post_id"
+    type = "S"
+  }
+
+  tags = local.tags
+}
+
+resource "aws_dynamodb_table" "likes" {
+  name         = "${var.project_name}-likes"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "post_id"
+  range_key    = "username"
+
+  attribute {
+    name = "post_id"
+    type = "S"
+  }
+
+  attribute {
+    name = "username"
+    type = "S"
+  }
+
+  tags = local.tags
+}
+
+#####################################
+# ECR repository
+#####################################
+
+resource "aws_ecr_repository" "app" {
+  name                 = var.ecr_repo_name
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = local.tags
+}
+
+#####################################
+# CloudWatch Logs
+#####################################
+
 resource "aws_cloudwatch_log_group" "app" {
   name              = "/ecs/${var.project_name}"
   retention_in_days = 14
   tags              = local.tags
 }
 
-# ---------- ECS Cluster ----------
+#####################################
+# ECS cluster
+#####################################
+
 resource "aws_ecs_cluster" "this" {
   name = "${var.project_name}-cluster"
 
@@ -46,7 +113,10 @@ resource "aws_ecs_cluster" "this" {
   tags = local.tags
 }
 
-# ---------- IAM (task exec + task role) ----------
+#####################################
+# IAM (task exec role, task role, DDB policy)
+#####################################
+
 data "aws_iam_policy_document" "assume_task" {
   statement {
     effect = "Allow"
@@ -77,7 +147,44 @@ resource "aws_iam_role" "task" {
   tags               = local.tags
 }
 
-# ---------- Task Definition ----------
+# Task role → DynamoDB RW
+data "aws_iam_policy_document" "ddb_rw" {
+  statement {
+    sid    = "DDBRW"
+    effect = "Allow"
+
+    actions = [
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:UpdateItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:Scan",
+      "dynamodb:Query",
+      "dynamodb:DescribeTable"
+    ]
+
+    resources = [
+      aws_dynamodb_table.users.arn,
+      aws_dynamodb_table.posts.arn,
+      aws_dynamodb_table.likes.arn
+    ]
+  }
+}
+
+resource "aws_iam_policy" "ddb_rw" {
+  name   = "${var.project_name}-ddb-rw"
+  policy = data.aws_iam_policy_document.ddb_rw.json
+}
+
+resource "aws_iam_role_policy_attachment" "task_ddb_attach" {
+  role       = aws_iam_role.task.name
+  policy_arn = aws_iam_policy.ddb_rw.arn
+}
+
+#####################################
+# ECS task definition
+#####################################
+
 resource "aws_ecs_task_definition" "app" {
   family                   = "${var.project_name}-task"
   cpu                      = var.cpu
@@ -94,14 +201,26 @@ resource "aws_ecs_task_definition" "app" {
 
   container_definitions = jsonencode([
     {
-      name      = "app"
-      image     = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+      name  = "app"
+      image = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+
       essential = true
 
-      portMappings = [{
-        containerPort = var.container_port
-        protocol      = "tcp"
-      }]
+      portMappings = [
+        {
+          containerPort = var.container_port
+          protocol      = "tcp"
+        }
+      ]
+
+      environment = [
+        { name = "AWS_REGION",     value = var.region },
+        { name = "APP_NAME",       value = var.project_name },
+        { name = "TABLE_USERS",    value = aws_dynamodb_table.users.name },
+        { name = "TABLE_POSTS",    value = aws_dynamodb_table.posts.name },
+        { name = "TABLE_LIKES",    value = aws_dynamodb_table.likes.name },
+        { name = "SESSION_SECRET", value = var.session_secret }
+      ]
 
       logConfiguration = {
         logDriver = "awslogs"
@@ -111,17 +230,27 @@ resource "aws_ecs_task_definition" "app" {
           awslogs-stream-prefix = "app"
         }
       }
+
+      healthCheck = {
+        command     = ["CMD-SHELL", "wget -qO- http://localhost:${var.container_port}/healthz || exit 1"]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 10
+      }
     }
   ])
 
   tags = local.tags
 }
 
-# ---------- Security Groups ----------
+#####################################
+# Security groups
+#####################################
+
 resource "aws_security_group" "alb" {
-  name        = "${var.project_name}-alb-sg"
-  description = "Allow HTTP"
-  vpc_id      = data.aws_vpc.default.id
+  name   = "${var.project_name}-alb-sg"
+  vpc_id = data.aws_vpc.default.id
 
   ingress {
     from_port   = 80
@@ -141,9 +270,8 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_security_group" "tasks" {
-  name        = "${var.project_name}-tasks-sg"
-  description = "Allow from ALB"
-  vpc_id      = data.aws_vpc.default.id
+  name   = "${var.project_name}-tasks-sg"
+  vpc_id = data.aws_vpc.default.id
 
   ingress {
     from_port       = var.container_port
@@ -162,7 +290,10 @@ resource "aws_security_group" "tasks" {
   tags = local.tags
 }
 
-# ---------- ALB + TG + Listener ----------
+#####################################
+# ALB + Target group + Listener
+#####################################
+
 resource "aws_lb" "app" {
   name               = "${var.project_name}-alb"
   internal           = false
@@ -180,12 +311,12 @@ resource "aws_lb_target_group" "app" {
   vpc_id      = data.aws_vpc.default.id
 
   health_check {
-    path                = "/"
+    path                = "/healthz"
     matcher             = "200"
-    healthy_threshold   = 2
-    unhealthy_threshold = 5
     interval            = 30
     timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 5
   }
 
   tags = local.tags
@@ -202,7 +333,10 @@ resource "aws_lb_listener" "http" {
   }
 }
 
-# ---------- ECS Service ----------
+#####################################
+# ECS service
+#####################################
+
 resource "aws_ecs_service" "app" {
   name            = "${var.project_name}-svc"
   cluster         = aws_ecs_cluster.this.id

@@ -1,39 +1,63 @@
 variable "project_name" {
-  type    = string
-  default = "game-2048"
+  description = "Name prefix for AWS resources (cluster, ALB, tables, etc.)."
+  type        = string
+  default     = "socialapp"
 }
 
 variable "region" {
-  type    = string
-  default = "us-east-1"
+  description = "AWS region to deploy into."
+  type        = string
+  default     = "us-east-1"
 }
 
 variable "image_tag" {
-  type    = string
-  default = "bootstrap"
+  description = "Container image tag to deploy (CI sets this to the commit SHA)."
+  type        = string
+  default     = "bootstrap"
 }
 
 variable "container_port" {
-  type    = number
-  default = 80
+  description = "Container port exposed by the app and targeted by the ALB."
+  type        = number
+  default     = 8000
+
+  validation {
+    condition     = var.container_port > 0 && var.container_port < 65536
+    error_message = "container_port must be between 1 and 65535."
+  }
 }
 
 variable "desired_count" {
-  type    = number
-  default = 1
+  description = "Number of ECS tasks to run."
+  type        = number
+  default     = 1
+
+  validation {
+    condition     = var.desired_count >= 1
+    error_message = "desired_count must be at least 1."
+  }
 }
 
 variable "cpu" {
-  type    = number
-  default = 256
+  description = "Fargate vCPU units for the task (e.g., 256, 512, 1024...)."
+  type        = number
+  default     = 256
 }
 
 variable "memory" {
-  type    = number
-  default = 512
+  description = "Fargate memory (MB) for the task (e.g., 512, 1024, 2048...)."
+  type        = number
+  default     = 512
 }
 
 variable "ecr_repo_name" {
-  type    = string
-  default = "game-2048"
+  description = "ECR repository name for the application image."
+  type        = string
+  default     = "socialapp"
+}
+
+variable "session_secret" {
+  description = "Secret used to sign the session cookie (set securely in CI/vars for production)."
+  type        = string
+  default     = "change-me-in-prod"
 }
