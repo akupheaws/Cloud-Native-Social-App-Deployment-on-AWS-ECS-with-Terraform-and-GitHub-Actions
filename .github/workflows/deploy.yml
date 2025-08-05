@@ -7,15 +7,15 @@ on:
 
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
-  PROJECT_NAME: Social App              # <-- change to "socialapp" if using the social app stack
+  PROJECT_NAME: socialapp                 # <— flipped to socialapp
   TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: Dockerfile               # root-level Dockerfile
-  BUILD_CONTEXT: .                     # root-level context
-  ECR_REPO_NAME: akuphe-socialapp-repo # <-- change if you want a different ECR repo
+  DOCKERFILE: Dockerfile                  # root-level Dockerfile
+  BUILD_CONTEXT: .                        # root-level context
+  ECR_REPO_NAME: socialapp                # <— new ECR repo name (change back if you want to reuse the old one)
   LOCK_TABLE_NAME: tf-locks
 
 concurrency:
-  group: deploy-2048
+  group: deploy-socialapp
   cancel-in-progress: false
 
 defaults:
@@ -203,6 +203,15 @@ jobs:
           echo "Resolved registry: $REGISTRY"
           echo "Resolved repo_url: $REPO_URL"
 
+      # Option A: generate/sync lockfile before Docker build (keep npm ci deterministic)
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Ensure package-lock.json is synced
+        run: |
+          npm install --package-lock-only
+
       - name: Login to ECR
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
@@ -302,7 +311,6 @@ jobs:
           TF_VAR_session_secret: ${{ secrets.SOCIALAPP_SESSION_SECRET }}
         run: |
           EXTRA=""
-          # Only pass session_secret if the secret is configured; avoids overriding TF default with empty
           if [ -n "${TF_VAR_session_secret}" ]; then
             EXTRA='-var="session_secret=${TF_VAR_session_secret}"'
           fi
