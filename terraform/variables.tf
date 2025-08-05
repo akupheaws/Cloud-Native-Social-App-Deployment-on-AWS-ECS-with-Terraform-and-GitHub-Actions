@@ -57,7 +57,8 @@ variable "ecr_repo_name" {
 }
 
 variable "session_secret" {
-  description = "Secret used to sign the session cookie (set securely in CI/vars for production)."
+  description = "Secret used to sign sessions in the app"
   type        = string
-  default     = "change-me-in-prod"
+  default     = "change-me-in-prod" # overridden by SOCIAlAPP_SESSION_SECRET in CI
 }
+
