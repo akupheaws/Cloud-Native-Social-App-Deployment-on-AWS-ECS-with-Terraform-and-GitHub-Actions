@@ -8,13 +8,11 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: socialapp
-  TF_STATE_KEY: terraform-socialapp.tfstate   # <— new key (not a secret)
-  DOCKERFILE: Dockerfile
-  BUILD_CONTEXT: .
+  TF_STATE_KEY: terraform-socialapp.tfstate   # new state key
+  DOCKERFILE: Dockerfile                      # root-level Dockerfile
+  BUILD_CONTEXT: .                            # root-level context
   ECR_REPO_NAME: socialapp
   LOCK_TABLE_NAME: tf-locks
-
-
 
 concurrency:
   group: deploy-socialapp
@@ -85,7 +83,7 @@ jobs:
       tf_bucket: ${{ steps.bk.outputs.bucket_name }}
 
   seed_ecr:
-    name: Ensure ECR exists (robust create/import)
+    name: Ensure ECR exists (robust create/import with rename handling)
     runs-on: ubuntu-latest
     needs: bootstrap_state
     permissions:
@@ -135,13 +133,17 @@ jobs:
         working-directory: terraform
         run: terraform init -reconfigure -backend-config=backend.hcl
 
-      - name: Ensure ECR exists and is in TF state (robust create/import)
+      - name: Ensure ECR exists and is in TF state (handle rename safely)
         working-directory: terraform
         run: |
           set -euo pipefail
           REPO="${ECR_REPO_NAME}"
 
-          # 1) Ensure the ECR repo exists (create if missing)
+          # Current repo name in TF state (if any)
+          CURR_NAME="$(terraform state show aws_ecr_repository.app 2>/dev/null \
+            | awk -F'= ' '/^ *name *=/ {gsub(/"/,"",$2); print $2; exit}' || true)"
+
+          # 1) Ensure desired ECR repo exists
           if ! aws ecr describe-repositories --repository-names "$REPO" >/dev/null 2>&1; then
             echo "ECR '$REPO' not found; creating via AWS CLI..."
             aws ecr create-repository --repository-name "$REPO" >/dev/null
@@ -149,15 +151,18 @@ jobs:
             echo "ECR '$REPO' already exists."
           fi
 
-          # 2) Import into Terraform state if not already tracked
-          if terraform state show aws_ecr_repository.app >/dev/null 2>&1; then
-            echo "Terraform state already has aws_ecr_repository.app"
-          else
-            echo "Importing '$REPO' into Terraform state..."
+          # 2) Make TF state point to the desired repo (handles rename cleanly)
+          if [ -z "${CURR_NAME:-}" ]; then
+            echo "No existing TF state for aws_ecr_repository.app; importing '$REPO'..."
             terraform import -input=false aws_ecr_repository.app "$REPO"
+          elif [ "$CURR_NAME" != "$REPO" ]; then
+            echo "TF state currently points to '$CURR_NAME' but desired is '$REPO' — re-importing..."
+            terraform import -input=false aws_ecr_repository.app "$REPO"
+          else
+            echo "TF state already points to '$REPO'."
           fi
 
-          # 3) Reconcile repo settings with HCL (mutability, scanning, tags)
+          # 3) Reconcile repo settings with HCL (no destroy/create)
           terraform apply -auto-approve \
             -target=aws_ecr_repository.app \
             -var="region=${AWS_REGION}" \
@@ -213,7 +218,7 @@ jobs:
           echo "Resolved registry: $REGISTRY"
           echo "Resolved repo_url: $REPO_URL"
 
-      # Option A: generate/sync lockfile before Docker build (keep npm ci deterministic)
+      # Deterministic builds: generate/sync lockfile before Docker build (keep npm ci)
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -312,6 +317,8 @@ jobs:
       - name: Terraform fmt & validate
         working-directory: terraform
         run: |
+          # Option 1: auto-format, then check and validate
+          terraform fmt -recursive
           terraform fmt -check -recursive
           terraform validate
 
