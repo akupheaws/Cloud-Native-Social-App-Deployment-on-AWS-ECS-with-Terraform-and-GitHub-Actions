@@ -8,11 +8,13 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: socialapp
-  TF_STATE_KEY: terraform.tfstate
-  DOCKERFILE: Dockerfile            # root-level Dockerfile
-  BUILD_CONTEXT: .                  # root-level context
+  TF_STATE_KEY: terraform-socialapp.tfstate   # <— new key (not a secret)
+  DOCKERFILE: Dockerfile
+  BUILD_CONTEXT: .
   ECR_REPO_NAME: socialapp
   LOCK_TABLE_NAME: tf-locks
+
+
 
 concurrency:
   group: deploy-socialapp
