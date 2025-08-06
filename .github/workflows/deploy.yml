@@ -8,9 +8,9 @@ on:
 env:
   AWS_REGION: ${{ secrets.AWS_REGION }}
   PROJECT_NAME: socialapp
-  TF_STATE_KEY: terraform-socialapp.tfstate   # new state key
-  DOCKERFILE: Dockerfile                      # root-level Dockerfile
-  BUILD_CONTEXT: .                            # root-level context
+  TF_STATE_KEY: terraform-socialapp.tfstate
+  DOCKERFILE: Dockerfile
+  BUILD_CONTEXT: .
   ECR_REPO_NAME: socialapp
   LOCK_TABLE_NAME: tf-locks
 
@@ -218,7 +218,7 @@ jobs:
           echo "Resolved registry: $REGISTRY"
           echo "Resolved repo_url: $REPO_URL"
 
-      # Deterministic builds: generate/sync lockfile before Docker build (keep npm ci)
+      # Deterministic builds: generate/sync lockfile before Docker build
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -419,7 +419,7 @@ jobs:
         run: |
           set -e
           ALB="$(terraform output -raw alb_dns_name || true)"
-          if [ -z "$ALB" ]; then
+          if [ -z "$ALB" ] || [ "$ALB" = "None" ]; then
             NAME="${PROJECT_NAME}-alb"
             ALB=$(aws elbv2 describe-load-balancers --names "$NAME" \
               --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)
@@ -432,7 +432,7 @@ jobs:
           echo "alb=$ALB" >> "$GITHUB_OUTPUT"
           echo "Resolved ALB: $ALB"
 
-    smoke_test:
+  smoke_test:
     name: Smoke test
     runs-on: ubuntu-latest
     needs: apply
@@ -450,14 +450,16 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          # 1) Try to use the output from apply
-          if [ -n "${{ needs.apply.outputs.alb }}" ] && [ "${{ needs.apply.outputs.alb }}" != "None" ]; then
-            echo "url=http://${{ needs.apply.outputs.alb }}" >> "$GITHUB_OUTPUT"
-            echo "Resolved from apply outputs: http://${{ needs.apply.outputs.alb }}"
+
+          # 1) Prefer the output from the apply job if present
+          FROM_APPLY="${{ needs.apply.outputs.alb }}"
+          if [ -n "$FROM_APPLY" ] && [ "$FROM_APPLY" != "None" ]; then
+            echo "url=http://$FROM_APPLY" >> "$GITHUB_OUTPUT"
+            echo "Resolved from apply outputs: http://$FROM_APPLY"
             exit 0
           fi
 
-          # 2) Fallback: resolve by canonical name "<project>-alb"
+          # 2) Fallback: try canonical name "<project>-alb"
           NAME="${PROJECT_NAME}-alb"
           ALB="$(aws elbv2 describe-load-balancers --names "$NAME" \
                   --query 'LoadBalancers[0].DNSName' --output text 2>/dev/null || true)"
@@ -484,8 +486,10 @@ jobs:
 
           if [ -z "$ALB" ] || [ "$ALB" = "None" ]; then
             echo "Failed to resolve ALB for project ${PROJECT_NAME}" >&2
-            # Helpful diagnostics:
-            aws elbv2 describe-load-balancers --query 'LoadBalancers[].{Name:LoadBalancerName,DNS:DNSName,Scheme:Scheme}' --output table || true
+            # Diagnostics to help troubleshoot
+            aws elbv2 describe-load-balancers \
+              --query 'LoadBalancers[].{Name:LoadBalancerName,DNS:DNSName,Scheme:Scheme,State:State.Code}' \
+              --output table || true
             exit 1
           fi
 
