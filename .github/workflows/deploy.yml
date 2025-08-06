@@ -328,6 +328,7 @@ jobs:
         run: |
           args=( \
             -var "region=${AWS_REGION}" \
+            -var "project_name=${PROJECT_NAME}" \
             -var "image_tag=${GITHUB_SHA}" \
             -var "ecr_repo_name=${ECR_REPO_NAME}" \
           )
@@ -397,6 +398,7 @@ jobs:
           args=( \
             -auto-approve \
             -var "region=${AWS_REGION}" \
+            -var "project_name=${PROJECT_NAME}" \
             -var "image_tag=${GITHUB_SHA}" \
             -var "ecr_repo_name=${ECR_REPO_NAME}" \
           )
