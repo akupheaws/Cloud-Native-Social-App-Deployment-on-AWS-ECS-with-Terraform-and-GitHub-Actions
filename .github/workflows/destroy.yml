@@ -1,0 +1,60 @@
+name: Destroy infra
+
+on:
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  PROJECT_NAME: socialapp
+  TF_STATE_KEY: terraform-socialapp.tfstate
+  LOCK_TABLE_NAME: tf-locks
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Derive state bucket (same logic as deploy)
+        id: bk
+        run: |
+          REPO_SLUG="${{ github.repository }}"
+          SLUG_LOWER=$(echo "$REPO_SLUG" | tr '[:upper:]' '[:lower:]')
+          BASE=$(echo "$SLUG_LOWER" | sed -E 's/[^a-z0-9-]/-/g; s/-+/-/g; s/^-+//; s/-+$//')
+          BASE=${BASE:0:32}
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          SUFFIX=$(printf '%s' "$SLUG_LOWER" | sha1sum | cut -c1-8)
+          echo "bucket=${BASE}-${ACCOUNT_ID}-${SUFFIX}-tf" >> "$GITHUB_OUTPUT"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.5
+
+      - name: Write backend.hcl
+        working-directory: terraform
+        run: |
+          cat > backend.hcl <<EOF
+          bucket         = "${{ steps.bk.outputs.bucket }}"
+          key            = "${{ env.TF_STATE_KEY }}"
+          region         = "${{ env.AWS_REGION }}"
+          dynamodb_table = "${{ env.LOCK_TABLE_NAME }}"
+          encrypt        = true
+          EOF
+
+      - name: Terraform init
+        working-directory: terraform
+        run: terraform init -reconfigure -backend-config=backend.hcl
+
+      - name: Terraform destroy
+        working-directory: terraform
+        run: |
+          terraform destroy -auto-approve \
+            -var "region=${AWS_REGION}" \
+            -var "project_name=${PROJECT_NAME}" \
+            -var "ecr_repo_name=${PROJECT_NAME}"
